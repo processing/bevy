@@ -1,6 +1,7 @@
 ---
 title: "Next Generation Scenes"
 authors: ["@cart"]
+<<<<<<< HEAD
 pull_requests: [23413, 23880, 23808, 23905, 24008]
 ---
 
