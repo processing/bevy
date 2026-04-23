@@ -930,7 +930,6 @@ impl ViewTarget {
     }
 
     /// Whether the final texture this view will render to needs to be presented.
-    /// Always `false` when no output surface is available this frame.
     pub fn needs_present(&self) -> bool {
         self.out_texture
             .as_ref()
