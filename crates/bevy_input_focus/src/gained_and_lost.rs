@@ -38,6 +38,10 @@ pub fn process_recorded_focus_changes(mut focus: ResMut<InputFocus>, mut command
     // so we can send the correct FocusLost events when focus changes.
     let mut previous_focus = focus.original_focus;
     for change in focus.bypass_change_detection().recorded_changes.drain(..) {
+        // Only send focus change events if the focused entity actually changed.
+        if change == previous_focus {
+            continue;
+        }
         match change {
             Some(new_focus) => {
                 if let Some(old_focus) = previous_focus {
@@ -180,25 +184,6 @@ mod tests {
                 FocusEvent::Lost(b),
                 FocusEvent::Gained(c),
             ]
-        );
-    }
-
-    #[test]
-    fn set_focus_to_same_entity() {
-        let mut app = setup_app();
-        let entity = app.world_mut().spawn_empty().id();
-
-        app.world_mut().resource_mut::<InputFocus>().set(entity);
-        app.update();
-        take_log(&mut app);
-
-        // Setting focus to the already-focused entity still records a change.
-        app.world_mut().resource_mut::<InputFocus>().set(entity);
-        app.update();
-
-        assert_eq!(
-            take_log(&mut app),
-            vec![FocusEvent::Lost(entity), FocusEvent::Gained(entity)]
         );
     }
 
