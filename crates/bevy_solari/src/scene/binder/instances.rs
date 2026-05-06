@@ -356,7 +356,7 @@ impl InstanceState {
             Some(material_slot),
             Some(blas_address),
         ) = (
-            inputs.mesh_allocator.mesh_vertex_slice(&instance.mesh),
+            inputs.mesh_allocator.mesh_vertex_slice(&instance.mesh, 0),
             inputs.mesh_allocator.mesh_index_slice(&instance.mesh),
             inputs
                 .render_meshes

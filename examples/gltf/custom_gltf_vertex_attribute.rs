@@ -90,7 +90,7 @@ impl Material2d for CustomMaterial {
             Mesh::ATTRIBUTE_COLOR.at_shader_location(1),
             ATTRIBUTE_BARYCENTRIC.at_shader_location(2),
         ])?;
-        descriptor.vertex.buffers = vec![vertex_layout];
+        descriptor.vertex.buffers = vertex_layout;
         Ok(())
     }
 }

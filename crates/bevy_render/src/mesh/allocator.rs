@@ -1,6 +1,8 @@
 //! Manages mesh vertex and index buffers.
 
 use alloc::borrow::Cow;
+use smallvec::SmallVec;
+
 use bevy_app::{App, Plugin};
 use bevy_asset::AssetId;
 use bevy_derive::{Deref, DerefMut};
@@ -12,6 +14,7 @@ use bevy_ecs::{
 };
 use bevy_log::warn;
 use bevy_mesh::Indices;
+use bevy_platform::collections::HashMap;
 use bevy_shape::{Aabb2d, BoundingVolume};
 use glam::Vec4;
 use wgpu::{BufferUsages, DownlevelFlags, COPY_BUFFER_ALIGNMENT};
@@ -20,7 +23,7 @@ use wgpu::{BufferUsages, DownlevelFlags, COPY_BUFFER_ALIGNMENT};
 use bevy_mesh::morph::MorphAttributes;
 
 use crate::{
-    mesh::{Mesh, MeshMetadata, MeshVertexBufferLayouts, RenderMesh},
+    mesh::{Mesh, MeshMetadata, MeshVertexBufferLayoutRef, MeshVertexBufferLayouts, RenderMesh},
     render_asset::{prepare_assets, ExtractedAssets},
     renderer::{RenderAdapter, RenderDevice, RenderQueue},
     slab_allocator::{
@@ -29,6 +32,11 @@ use crate::{
     },
     GpuResourceAppExt, Render, RenderApp, RenderSystems,
 };
+
+/// Maximum number of vertex buffer bindings a mesh can use.
+///
+/// This limits the range of binding indices we try to free when deallocating a
+/// mesh. The WebGPU spec guarantees at least 8 vertex buffers.
 
 /// A plugin that manages GPU memory for mesh data.
 pub struct MeshAllocatorPlugin;
@@ -56,6 +64,10 @@ pub struct MeshAllocator {
     /// WebGL 2. On this platform, we must give each vertex array its own
     /// buffer, because we can't adjust the first vertex when we perform a draw.
     general_vertex_slabs_supported: bool,
+
+    /// How many vertex buffer bindings each allocated mesh has, so lookups and
+    /// frees don't need the caller to know.
+    vertex_binding_counts: HashMap<AssetId<Mesh>, u8>,
 }
 
 /// Tunable parameters that customize the behavior of the allocator.
@@ -113,10 +125,10 @@ impl SlabItem for MeshSlabItem {
 }
 
 /// IDs of the slabs associated with a single mesh.
-#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MeshSlabs {
-    /// The slab storing the mesh's vertex data.
-    pub vertex_slab_id: MeshSlabId,
+    /// The slabs storing the mesh's vertex data, one per vertex binding.
+    pub vertex_slab_ids: SmallVec<[MeshSlabId; 1]>,
     /// The slab storing the mesh's index data, if the mesh is indexed.
     pub index_slab_id: Option<MeshSlabId>,
     /// The slab storing the mesh's metadata.
@@ -156,8 +168,8 @@ impl MeshAllocationKey {
 pub enum ElementClass {
     /// Per-mesh metadata, except for meshes without `final_aabb` and `final_uv_ranges`.
     Metadata,
-    /// Data for a vertex.
-    Vertex,
+    /// Vertex data for a specific binding slot.
+    Vertex { binding_index: u8 },
     /// A vertex index.
     Index,
     #[cfg(feature = "morph")]
@@ -240,6 +252,7 @@ impl FromWorld for MeshAllocator {
         Self {
             slab_allocator,
             general_vertex_slabs_supported,
+            vertex_binding_counts: HashMap::default(),
         }
     }
 }
@@ -298,18 +311,35 @@ impl MeshAllocator {
     pub fn meshes_displaced_by_slab_growth(&self) -> impl Iterator<Item = AssetId<Mesh>> {
         self.keys_displaced_by_slab_growth()
             .iter()
-            .filter(|key| matches!(key.class, ElementClass::Vertex | ElementClass::Index))
+            .filter(|key| matches!(key.class, ElementClass::Vertex { .. } | ElementClass::Index))
             .map(|key| key.mesh_id)
     }
 
+    /// Returns the base vertex offset for the mesh with the given ID.
+    ///
+    /// All vertex buffer bindings share the same base vertex offset.
+    /// Single-binding meshes use the slab allocation offset; multi-binding
+    /// meshes (which use dedicated buffers) always have offset 0.
+    pub fn mesh_base_vertex(&self, mesh_id: &AssetId<Mesh>) -> Option<u32> {
+        self.mesh_vertex_slice(mesh_id, 0)
+            .map(|s| s.range.start)
+    }
+
     /// Returns the buffer and range within that buffer of the vertex data for
-    /// the mesh with the given ID.
+    /// the mesh with the given ID and binding index.
     ///
     /// If the mesh wasn't allocated, returns None.
-    pub fn mesh_vertex_slice(&self, mesh_id: &AssetId<Mesh>) -> Option<MeshBufferSlice<'_>> {
+    pub fn mesh_vertex_slice(
+        &self,
+        mesh_id: &AssetId<Mesh>,
+        binding_index: u8,
+    ) -> Option<MeshBufferSlice<'_>> {
         self.slab_allocation_slice(
-            &MeshAllocationKey::new(*mesh_id, ElementClass::Vertex),
-            *self.mesh_id_to_vertex_slab(mesh_id)?,
+            &MeshAllocationKey::new(
+                *mesh_id,
+                ElementClass::Vertex { binding_index },
+            ),
+            *self.mesh_id_to_vertex_slab(mesh_id, binding_index)?,
         )
     }
 
@@ -322,6 +352,16 @@ impl MeshAllocator {
             &MeshAllocationKey::new(*mesh_id, ElementClass::Index),
             *self.mesh_id_to_index_slab(mesh_id)?,
         )
+    }
+
+    /// Returns the slab ID of the morph target data for the mesh with the
+    /// given ID, if it has morph targets.
+    #[cfg(feature = "morph")]
+    pub fn mesh_morph_target_slab(
+        &self,
+        mesh_id: &AssetId<Mesh>,
+    ) -> Option<MeshSlabId> {
+        self.mesh_id_to_morph_target_slab(mesh_id).copied()
     }
 
     /// Returns the buffer and range within that buffer of the morph target data
@@ -343,8 +383,13 @@ impl MeshAllocator {
     /// index buffer, the corresponding element in the returned tuple will be
     /// None.
     pub fn mesh_slabs(&self, mesh_id: &AssetId<Mesh>) -> Option<MeshSlabs> {
+        let binding_count = *self.vertex_binding_counts.get(mesh_id)?;
+        let mut vertex_slab_ids = SmallVec::with_capacity(binding_count as usize);
+        for i in 0..binding_count {
+            vertex_slab_ids.push(*self.mesh_id_to_vertex_slab(mesh_id, i)?);
+        }
         Some(MeshSlabs {
-            vertex_slab_id: self.mesh_id_to_vertex_slab(mesh_id).cloned()?,
+            vertex_slab_ids,
             index_slab_id: self.mesh_id_to_index_slab(mesh_id).cloned(),
             metadata_slab_id: self.mesh_id_to_metadata_slab(mesh_id).cloned(),
             #[cfg(feature = "morph")]
@@ -368,11 +413,17 @@ impl MeshAllocator {
             .get(&MeshAllocationKey::new(*mesh_id, ElementClass::Metadata))
     }
 
-    /// Given the ID of a mesh, returns the ID of the slab that contains the
-    /// vertex data for that mesh, if it exists.
-    fn mesh_id_to_vertex_slab(&self, mesh_id: &AssetId<Mesh>) -> Option<&SlabId<MeshSlabItem>> {
-        self.key_to_slab
-            .get(&MeshAllocationKey::new(*mesh_id, ElementClass::Vertex))
+    /// Given the ID of a mesh and binding index, returns the ID of the slab
+    /// that contains the vertex data for that binding, if it exists.
+    fn mesh_id_to_vertex_slab(
+        &self,
+        mesh_id: &AssetId<Mesh>,
+        binding_index: u8,
+    ) -> Option<&SlabId<MeshSlabItem>> {
+        self.key_to_slab.get(&MeshAllocationKey::new(
+            *mesh_id,
+            ElementClass::Vertex { binding_index },
+        ))
     }
 
     /// Given the ID of a mesh, returns the ID of the slab that contains the
@@ -429,8 +480,8 @@ impl MeshAllocator {
 
         // Loop over each mesh that was extracted this frame.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
-            let vertex_buffer_size = mesh.get_vertex_buffer_size() as u64;
-            if vertex_buffer_size == 0 {
+            let vertex_buffer_sizes = mesh.get_vertex_buffer_sizes();
+            if vertex_buffer_sizes.iter().all(|&s| s == 0) {
                 warn!("Mesh {:?} contains no vertices.", mesh_id);
                 continue;
             }
@@ -453,21 +504,38 @@ impl MeshAllocator {
                 }
             }
 
-            // Allocate vertex data. Note that we can only pack mesh vertex data
-            // together if the platform supports it.
-            let vertex_element_layout = ElementLayout::vertex(mesh_vertex_buffer_layouts, mesh);
-            if self.general_vertex_slabs_supported {
-                allocation_stage.allocate(
-                    &MeshAllocationKey::new(*mesh_id, ElementClass::Vertex),
-                    vertex_buffer_size,
-                    vertex_element_layout,
-                    mesh_allocator_settings,
+            let mesh_vertex_buffer_layout =
+                mesh.get_mesh_vertex_buffer_layout(mesh_vertex_buffer_layouts);
+            let binding_count = mesh_vertex_buffer_layout.0.binding_count();
+            self.vertex_binding_counts
+                .insert(*mesh_id, binding_count as u8);
+
+            // Allocate vertex data for each binding. Multi-binding meshes use
+            // dedicated (large) allocations to guarantee base_vertex = 0 across
+            // all bindings.
+            for binding_index in 0..binding_count {
+                let vertex_element_layout =
+                    ElementLayout::vertex_for_binding(&mesh_vertex_buffer_layout, binding_index);
+                let key = MeshAllocationKey::new(
+                    *mesh_id,
+                    ElementClass::Vertex {
+                        binding_index: binding_index as u8,
+                    },
                 );
-            } else {
-                allocation_stage.allocate_large(
-                    &MeshAllocationKey::new(*mesh_id, ElementClass::Vertex),
-                    vertex_element_layout,
-                );
+                let buffer_size = vertex_buffer_sizes[binding_index] as u64;
+
+                if binding_count == 1 && self.general_vertex_slabs_supported {
+                    allocation_stage.allocate(
+                        &key,
+                        buffer_size,
+                        vertex_element_layout,
+                        mesh_allocator_settings,
+                    );
+                } else {
+                    // Multi-binding or WebGL2: dedicated buffer per binding to
+                    // ensure consistent base_vertex offset (always 0).
+                    allocation_stage.allocate_large(&key, vertex_element_layout);
+                }
             }
 
             // Allocate index data.
@@ -558,8 +626,8 @@ impl MeshAllocator {
         );
     }
 
-    /// Copies vertex array data from a mesh into the appropriate spot in the
-    /// slab.
+    /// Copies vertex array data from a mesh into the appropriate spots in the
+    /// slabs (one per binding).
     fn copy_mesh_vertex_data(
         &mut self,
         mesh_id: &AssetId<Mesh>,
@@ -567,14 +635,22 @@ impl MeshAllocator {
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
     ) {
-        // Call the generic function.
-        self.copy_element_data(
-            &MeshAllocationKey::new(*mesh_id, ElementClass::Vertex),
-            mesh.get_vertex_buffer_size(),
-            |slice| mesh.write_packed_vertex_buffer_data(slice),
-            render_device,
-            render_queue,
-        );
+        let sizes = mesh.get_vertex_buffer_sizes();
+        for (binding_index, &size) in sizes.iter().enumerate() {
+            let key = MeshAllocationKey::new(
+                *mesh_id,
+                ElementClass::Vertex {
+                    binding_index: binding_index as u8,
+                },
+            );
+            self.copy_element_data(
+                &key,
+                size,
+                |slice| mesh.write_vertex_buffer_data(binding_index, slice),
+                render_device,
+                render_queue,
+            );
+        }
     }
 
     /// Copies index array data from a mesh into the appropriate spot in the
@@ -645,7 +721,13 @@ impl MeshAllocator {
 
         for mesh_id in meshes_to_free {
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Metadata));
-            deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Vertex));
+            let binding_count = self.vertex_binding_counts.remove(mesh_id).unwrap_or(1);
+            for binding_index in 0..binding_count {
+                deallocation_stage.free(&MeshAllocationKey::new(
+                    *mesh_id,
+                    ElementClass::Vertex { binding_index },
+                ));
+            }
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Index));
             #[cfg(feature = "morph")]
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::MorphTarget));
@@ -688,17 +770,16 @@ impl ElementLayout {
         }
     }
 
-    /// Creates the appropriate [`ElementLayout`] for the given mesh's vertex
-    /// data.
-    fn vertex(
-        mesh_vertex_buffer_layouts: &mut MeshVertexBufferLayouts,
-        mesh: &Mesh,
+    /// Creates the appropriate [`ElementLayout`] for a specific vertex binding.
+    fn vertex_for_binding(
+        layout: &MeshVertexBufferLayoutRef,
+        binding_index: usize,
     ) -> ElementLayout {
-        let mesh_vertex_buffer_layout =
-            mesh.get_mesh_vertex_buffer_layout(mesh_vertex_buffer_layouts);
         ElementLayout::new(
-            ElementClass::Vertex,
-            mesh_vertex_buffer_layout.0.layout().array_stride,
+            ElementClass::Vertex {
+                binding_index: binding_index as u8,
+            },
+            layout.0.bindings()[binding_index].layout.array_stride,
         )
     }
 
@@ -739,7 +820,7 @@ impl ElementClass {
                     BufferUsages::UNIFORM
                 }
             }
-            ElementClass::Vertex => BufferUsages::VERTEX,
+            ElementClass::Vertex { .. } => BufferUsages::VERTEX,
             ElementClass::Index => BufferUsages::INDEX,
             #[cfg(feature = "morph")]
             ElementClass::MorphTarget => BufferUsages::STORAGE,
@@ -792,6 +873,7 @@ mod tests {
         MeshAllocator {
             slab_allocator: SlabAllocator::new(),
             general_vertex_slabs_supported,
+            vertex_binding_counts: HashMap::default(),
         }
     }
 
@@ -869,7 +951,7 @@ mod tests {
             &render_device,
             &render_queue,
         );
-        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id).is_some());
+        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id, 0).is_some());
 
         // Being present in `added` alone must be enough to release the previous
         // allocation.
@@ -902,7 +984,7 @@ mod tests {
             &render_device,
             &render_queue,
         );
-        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id).is_some());
+        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id, 0).is_some());
 
         let mut extracted_meshes = ExtractedAssets::<RenderMesh>::default();
         extracted_meshes.modified.insert(mesh_id);
@@ -937,7 +1019,7 @@ mod tests {
         assert!(has_allocation(
             &mesh_allocator,
             mesh_id,
-            ElementClass::Vertex
+            ElementClass::Vertex { binding_index: 0 }
         ));
         assert!(has_allocation(
             &mesh_allocator,
@@ -1002,7 +1084,7 @@ mod tests {
         assert!(has_allocation(
             &mesh_allocator,
             mesh_id,
-            ElementClass::Vertex
+            ElementClass::Vertex { binding_index: 0 }
         ));
         assert!(
             !has_allocation(&mesh_allocator, mesh_id, ElementClass::Index),
@@ -1038,7 +1120,7 @@ mod tests {
         );
         assert_eq!(mesh_allocator.slab_count(), 1);
         let original_slab =
-            mesh_allocator.key_to_slab[&MeshAllocationKey::new(mesh_id, ElementClass::Vertex)];
+            mesh_allocator.key_to_slab[&MeshAllocationKey::new(mesh_id, ElementClass::Vertex { binding_index: 0 })];
 
         // Adding a normal attribute widens the vertex, which needs a slab with a
         // different element layout.
@@ -1053,7 +1135,7 @@ mod tests {
         );
 
         let new_slab =
-            mesh_allocator.key_to_slab[&MeshAllocationKey::new(mesh_id, ElementClass::Vertex)];
+            mesh_allocator.key_to_slab[&MeshAllocationKey::new(mesh_id, ElementClass::Vertex { binding_index: 0 })];
         assert_ne!(
             new_slab, original_slab,
             "the wider vertex should have landed in a slab with a different layout"
@@ -1063,7 +1145,7 @@ mod tests {
             1,
             "the slab the mesh moved out of was not reclaimed"
         );
-        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id).is_some());
+        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id, 0).is_some());
     }
 
     /// One frame-loop scenario for [`assert_steady_state`].
@@ -1128,7 +1210,7 @@ mod tests {
             }
         }
 
-        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id).is_some());
+        assert!(mesh_allocator.mesh_vertex_slice(&mesh_id, 0).is_some());
     }
 
     /// Re-extracting the same mesh ID every frame must reach a steady state.

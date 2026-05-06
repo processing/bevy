@@ -81,7 +81,7 @@ impl Material for CustomMaterial {
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             ATTRIBUTE_BLEND_COLOR.at_shader_location(1),
         ])?;
-        descriptor.vertex.buffers = vec![vertex_layout];
+        descriptor.vertex.buffers = vertex_layout;
         Ok(())
     }
 }
