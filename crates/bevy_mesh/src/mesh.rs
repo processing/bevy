@@ -1119,7 +1119,7 @@ impl Mesh {
     /// # Panics
     /// Panics when the mesh data has already been extracted to `RenderWorld`.
     /// Panics if `binding_index` is out of range.
-    pub fn write_vertex_buffer_data(&self, binding_index: usize, slice: &mut [u8]) {
+    pub fn write_vertex_buffer_data(&self, binding_index: usize, mut slice: WriteOnly<[u8]>) {
         let vertex_count = self.count_vertices();
         let groups = self.attributes_by_buffer();
 
@@ -1143,7 +1143,9 @@ impl Mesh {
                 .enumerate()
             {
                 let offset = vertex_index * vertex_size + attribute_offset;
-                slice[offset..offset + attribute_size].copy_from_slice(attribute_bytes);
+                slice
+                    .slice(offset..offset + attribute_size)
+                    .copy_from_slice(attribute_bytes);
             }
             attribute_offset += attribute_size;
         }
