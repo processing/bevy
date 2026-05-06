@@ -291,7 +291,7 @@ impl InstanceState {
     ) -> bool {
         let slot = instance.slot;
         let (Some(vertex_slice), Some(index_slice), Some(material_slot), Some(blas_address)) = (
-            inputs.mesh_allocator.mesh_vertex_slice(&instance.mesh),
+            inputs.mesh_allocator.mesh_vertex_slice(&instance.mesh, 0),
             inputs.mesh_allocator.mesh_index_slice(&instance.mesh),
             inputs.assets.material_slots.get(&instance.material),
             inputs.blas_manager.device_address(&instance.mesh),

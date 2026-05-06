@@ -794,7 +794,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawColoredMesh2d {
         let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
             return RenderCommandResult::Skip;
         };
-        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(mesh_asset_id) else {
+        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(mesh_asset_id, 0) else {
             return RenderCommandResult::Skip;
         };
 

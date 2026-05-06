@@ -238,7 +238,7 @@ impl SpecializedMeshPipeline for CustomMeshPipeline {
             vertex_attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(1));
         }
         // This will automatically generate the correct `VertexBufferLayout` based on the vertex attributes
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layout(&vertex_attributes)?;
 
         let view_layout = self
             .mesh_pipeline
@@ -255,7 +255,7 @@ impl SpecializedMeshPipeline for CustomMeshPipeline {
                 shader: self.shader_handle.clone(),
                 shader_defs: shader_defs.clone(),
                 // Customize how to store the meshes' vertex attributes in the vertex buffer
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment: Some(FragmentState {

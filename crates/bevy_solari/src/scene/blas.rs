@@ -109,7 +109,7 @@ pub fn prepare_raytracing_blas(
         .iter()
         .filter(|(_, mesh)| is_mesh_raytracing_compatible(mesh))
         .map(|(asset_id, _)| {
-            let vertex_slice = mesh_allocator.mesh_vertex_slice(asset_id).unwrap();
+            let vertex_slice = mesh_allocator.mesh_vertex_slice(asset_id, 0).unwrap();
             let index_slice = mesh_allocator.mesh_index_slice(asset_id).unwrap();
 
             let (blas, blas_size) =
@@ -248,6 +248,7 @@ fn allocate_blas(
 
 fn is_mesh_raytracing_compatible(mesh: &Mesh) -> bool {
     let triangle_list = mesh.primitive_topology() == PrimitiveTopology::TriangleList;
+    let single_binding = mesh.binding_count() <= 1;
     let vertex_attributes = mesh
         .attributes()
         .map(|(attribute, _)| (attribute.id, attribute.format))
@@ -258,5 +259,5 @@ fn is_mesh_raytracing_compatible(mesh: &Mesh) -> bool {
             (Mesh::ATTRIBUTE_TANGENT.id, Mesh::ATTRIBUTE_TANGENT.format),
         ]);
     let indexed_32 = matches!(mesh.indices(), Some(Indices::U32(..)));
-    mesh.enable_raytracing && triangle_list && vertex_attributes && indexed_32
+    mesh.enable_raytracing && triangle_list && single_binding && vertex_attributes && indexed_32
 }

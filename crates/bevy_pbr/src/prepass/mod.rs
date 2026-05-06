@@ -607,7 +607,7 @@ impl PrepassPipeline {
             self.skins_use_uniform_buffers,
         );
         bind_group_layouts.insert(2, bind_group);
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layout(&vertex_attributes)?;
         // Setup prepass fragment targets - normals in slot 0 (or None if not needed), motion vectors in slot 1
         let mut targets = prepass_target_descriptors(
             mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS),
@@ -669,7 +669,7 @@ impl PrepassPipeline {
             vertex: VertexState {
                 shader: vert_shader_handle,
                 shader_defs,
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment,
