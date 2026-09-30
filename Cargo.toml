@@ -1725,6 +1725,17 @@ category = "3D Rendering"
 wasm = false
 
 [[example]]
+name = "cpu_particles"
+path = "examples/3d/cpu_particles.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.cpu_particles]
+name = "CPU Particles"
+description = "Draws a CPU-simulated particle array through a GpuBatchedMesh3d, without an entity per particle"
+category = "3D Rendering"
+wasm = false
+
+[[example]]
 name = "mesh_ray_cast"
 path = "examples/3d/mesh_ray_cast.rs"
 doc-scrape-examples = true
