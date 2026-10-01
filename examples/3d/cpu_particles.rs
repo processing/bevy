@@ -1,7 +1,7 @@
 //! CPU-simulated particles drawn through a [`GpuBatchedMesh3d`].
 use bevy::{
     camera::{primitives::Aabb, Hdr},
-    math::{Affine3, Affine3Ext, Vec3A},
+    math::{ops, Affine3, Affine3Ext},
     pbr::gpu_instance_batch::{
         GpuBatchedMesh3d, GpuInstanceBatchPlugin, GpuInstanceBatchReservations, GpuMeshInstance,
     },
@@ -82,9 +82,9 @@ impl CpuParticles {
         self.particles[slot] = Particle {
             position: EMITTER_POSITION,
             velocity: Vec3::new(
-                angle.cos() * spread,
+                ops::cos(angle) * spread,
                 self.rng.random_range(9.0..12.0),
-                angle.sin() * spread,
+                ops::sin(angle) * spread,
             ),
             age: 0.0,
             lifetime: self.rng.random_range(3.0..5.0),
@@ -147,10 +147,7 @@ fn setup(
             max_capacity: MAX_PARTICLES,
         },
         CpuParticles::new(MAX_PARTICLES),
-        Aabb {
-            center: Vec3A::new(0.0, 4.0, 0.0),
-            half_extents: Vec3A::new(16.0, 8.0, 16.0),
-        },
+        Aabb::default(),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.8, 0.5),
             emissive: LinearRgba::rgb(4.0, 2.0, 0.6),
@@ -179,9 +176,9 @@ fn move_obstacles(time: Res<Time>, mut obstacles: Query<(&mut Transform, &Obstac
     for (mut transform, obstacle) in &mut obstacles {
         let angle = obstacle.phase + time.elapsed_secs() * obstacle.orbit_speed;
         transform.translation = Vec3::new(
-            angle.cos() * obstacle.orbit_radius,
-            2.0 + obstacle.radius + (angle * 1.3).sin(),
-            angle.sin() * obstacle.orbit_radius,
+            ops::cos(angle) * obstacle.orbit_radius,
+            2.0 + obstacle.radius + ops::sin(angle * 1.3),
+            ops::sin(angle) * obstacle.orbit_radius,
         );
     }
 }
@@ -229,12 +226,15 @@ fn simulate_particles(
     }
 }
 
-fn write_particle_instances(mut emitter: Single<&mut CpuParticles>) {
+fn write_particle_instances(emitter: Single<(&mut CpuParticles, &mut Aabb)>) {
+    let (mut emitter, mut aabb) = emitter.into_inner();
     let CpuParticles {
         particles,
         instances,
         ..
-    } = &mut **emitter;
+    } = &mut *emitter;
+    let mut min = Vec3::splat(f32::MAX);
+    let mut max = Vec3::splat(f32::MIN);
     for (index, (particle, instance)) in particles.iter().zip(instances).enumerate() {
         if particle.age >= particle.lifetime {
             *instance = GpuMeshInstance::default();
@@ -248,6 +248,8 @@ fn write_particle_instances(mut emitter: Single<&mut CpuParticles>) {
             rotation,
             particle.position,
         );
+        min = min.min(particle.position);
+        max = max.max(particle.position);
         *instance = GpuMeshInstance {
             world_from_local: world_from_local.to_transpose(),
             is_active: 1,
@@ -255,6 +257,11 @@ fn write_particle_instances(mut emitter: Single<&mut CpuParticles>) {
             pad: [0; 2],
         };
     }
+    *aabb = if min.cmple(max).all() {
+        Aabb::from_min_max(min - 0.25, max + 0.25)
+    } else {
+        Aabb::default()
+    };
 }
 
 fn update_obstacle_glow(
@@ -263,7 +270,7 @@ fn update_obstacle_glow(
     mut obstacles: Query<(&mut Obstacle, &MeshMaterial3d<StandardMaterial>)>,
 ) {
     for (mut obstacle, material) in &mut obstacles {
-        obstacle.glow *= (-3.0 * time.delta_secs()).exp();
+        obstacle.glow *= ops::exp(-3.0 * time.delta_secs());
         if let Some(mut material) = materials.get_mut(material) {
             let glow = obstacle.glow.min(20.0);
             material.emissive = LinearRgba::rgb(glow * 0.6, glow * 0.25, glow * 0.05);

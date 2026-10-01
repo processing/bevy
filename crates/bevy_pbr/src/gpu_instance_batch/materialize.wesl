@@ -8,6 +8,7 @@ struct Metadata {
     input_base: u32,
     capacity: u32,
     pad: vec2<u32>,
+    world_from_entity: mat3x4<f32>,
 }
 @group(0) @binding(0) var<uniform> metadata: Metadata;
 @group(0) @binding(1) var<storage> instances: array<GpuMeshInstance>;
@@ -20,10 +21,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let output = metadata.input_base + id.x;
     let instance = instances[id.x];
     var input = metadata.mesh_input;
-    input.world_from_local = instance.world_from_local;
+    let entity = metadata.world_from_entity;
+    let world_from_local = mat3x4<f32>(
+        instance.world_from_local * entity[0].xyz + vec4(0.0, 0.0, 0.0, entity[0].w),
+        instance.world_from_local * entity[1].xyz + vec4(0.0, 0.0, 0.0, entity[1].w),
+        instance.world_from_local * entity[2].xyz + vec4(0.0, 0.0, 0.0, entity[2].w),
+    );
+    input.world_from_local = world_from_local;
     // The affine transpose stores the linear matrix in the first three lanes.
-    let linear = mat3x3<f32>(instance.world_from_local[0].xyz,
-        instance.world_from_local[1].xyz, instance.world_from_local[2].xyz);
+    let linear = mat3x3<f32>(world_from_local[0].xyz,
+        world_from_local[1].xyz, world_from_local[2].xyz);
     input.flags = (input.flags & ~MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT)
         | select(0u, MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT, determinant(linear) >= 0.0);
     input.tag = instance.tag;
