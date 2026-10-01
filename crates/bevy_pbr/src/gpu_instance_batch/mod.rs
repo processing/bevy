@@ -4,6 +4,10 @@
 //! [`GpuMeshInstance`]s that a compute shader fills in
 //! [`GpuInstanceBatchSystems::Publish`]. The batch then draws through the
 //! standard mesh pipeline as a single indirect draw.
+//!
+//! Instance transforms are relative to the batch entity's [`GlobalTransform`].
+//! An [`Aabb`] on the batch entity bounds every instance in that same space and
+//! culls the whole batch on the CPU; without one the batch is always visible.
 
 mod materialize;
 
@@ -11,14 +15,14 @@ use bevy_app::{App, Plugin, PostUpdate};
 use bevy_asset::{AssetEvent, AssetEventSystems, AssetId, Assets};
 use bevy_camera::{
     primitives::{Aabb, MeshAabb},
-    visibility::{NoCpuCulling, NoFrustumCulling},
+    visibility::{NoCpuCulling, ViewVisibility},
 };
 use bevy_core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d};
 use bevy_diagnostic::FrameCount;
 use bevy_ecs::prelude::*;
 use bevy_light::{NotShadowReceiver, TransmittedShadowReceiver};
 use bevy_log::{warn, warn_once};
-use bevy_math::{Vec3, Vec4};
+use bevy_math::{Affine3, Affine3Ext, Vec3, Vec4};
 use bevy_mesh::{Mesh, Mesh3d, Mesh3dVisibility};
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::{
@@ -68,8 +72,12 @@ pub enum GpuInstanceBatchSystems {
 
 /// Up to `max_capacity` GPU-authored instances of a mesh, drawn as one indirect
 /// draw. Pair with `MeshMaterial3d<M>`, not [`Mesh3d`].
+///
+/// Each instance's `world_from_local` is applied after this entity's
+/// [`GlobalTransform`], so leave the entity at the identity to author instances
+/// in world space.
 #[derive(Component, Clone)]
-#[require(Transform, NoFrustumCulling, Mesh3dVisibility)]
+#[require(Transform, Mesh3dVisibility)]
 pub struct GpuBatchedMesh3d {
     pub mesh: bevy_asset::Handle<Mesh>,
     pub max_capacity: u32,
@@ -81,7 +89,9 @@ pub(crate) struct ExtractedGpuBatchedMesh {
     pub max_capacity: u32,
     pub local_bounds: Option<Aabb>,
     pub flags: u32,
+    pub world_from_entity: [Vec4; 3],
     pub world_center: Vec3,
+    pub visible: bool,
 }
 
 #[derive(Resource, Default)]
@@ -246,6 +256,7 @@ pub(crate) fn extract_gpu_batched_meshes(
             &GpuBatchedMesh3d,
             Option<&Aabb>,
             &GlobalTransform,
+            &ViewVisibility,
             Has<NotShadowReceiver>,
             Has<TransmittedShadowReceiver>,
             Has<Mesh3d>,
@@ -269,6 +280,7 @@ pub(crate) fn extract_gpu_batched_meshes(
         batch,
         bounds,
         transform,
+        view_visibility,
         not_receiver,
         transmitted_receiver,
         has_mesh,
@@ -303,8 +315,10 @@ pub(crate) fn extract_gpu_batched_meshes(
                     } else {
                         0
                     },
+                world_from_entity: Affine3::from(transform.affine()).to_transpose(),
                 world_center: transform
                     .transform_point(bounds.map_or(Vec3::ZERO, |b| b.center.into())),
+                visible: view_visibility.get(),
             },
         );
     }
@@ -358,7 +372,7 @@ fn prepare_gpu_batched_mesh_draws(
     for job in materialization.jobs.values_mut() {
         job.active = false;
     }
-    if !support.is_culling_supported() || extracted.0.is_empty() {
+    if !support.is_culling_supported() || !extracted.0.values().any(|draw| draw.visible) {
         return;
     }
 
@@ -370,7 +384,7 @@ fn prepare_gpu_batched_mesh_draws(
     let input = &mut buffers.current_input_buffer;
     input.ensure_nonempty();
     let mut scratch_end = input.len().max(culling.len() as usize) as u32;
-    for (&entity, draw) in &extracted.0 {
+    for (&entity, draw) in extracted.0.iter().filter(|(_, draw)| draw.visible) {
         let batch = batches.entry(entity).or_insert(RenderMeshInstanceBatch {
             asset_id: draw.mesh_asset_id,
             input_range: 0..0,
@@ -399,6 +413,7 @@ fn prepare_gpu_batched_mesh_draws(
         materialization.jobs.entry(entity).or_default().update(
             template,
             MeshCullingData::new(draw.local_bounds.as_ref()),
+            draw.world_from_entity,
             base,
             draw.max_capacity,
         );

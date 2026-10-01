@@ -1,7 +1,7 @@
 use bevy_app::App;
 use bevy_asset::{embedded_asset, load_embedded_asset};
 use bevy_ecs::prelude::*;
-use bevy_math::UVec2;
+use bevy_math::{UVec2, Vec4};
 use bevy_render::{
     batching::gpu_preprocessing::BatchedInstanceBuffers,
     diagnostic::RecordDiagnostics as _,
@@ -29,6 +29,7 @@ struct MaterializationMetadata {
     input_base: u32,
     capacity: u32,
     pad: UVec2,
+    world_from_entity: [Vec4; 3],
 }
 
 #[derive(Default)]
@@ -44,6 +45,7 @@ impl MaterializationJob {
         &mut self,
         template: MeshInputUniform,
         bounds: MeshCullingData,
+        world_from_entity: [Vec4; 3],
         input_base: u32,
         capacity: u32,
     ) {
@@ -53,6 +55,7 @@ impl MaterializationJob {
             input_base,
             capacity,
             pad: UVec2::ZERO,
+            world_from_entity,
         });
         self.active = true;
     }

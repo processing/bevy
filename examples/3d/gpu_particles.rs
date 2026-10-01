@@ -176,7 +176,7 @@ fn update_mouse_world_pos(
     }
     let t = -ray.origin.y / ray.direction.y;
     if t > 0.0 {
-        mouse_pos.0 = ray.origin + ray.direction * t;
+        mouse_pos.0 = (ray.origin + ray.direction * t).clamp(Vec3::splat(-12.0), Vec3::splat(12.0));
     }
 }
 
