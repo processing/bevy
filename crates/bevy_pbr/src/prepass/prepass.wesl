@@ -6,6 +6,7 @@ import package::{
     render::{
         mesh_bindings::mesh,
         mesh_functions,
+        mesh_types::MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT,
         skinning,
         morph,
         morph::{morph_position, morph_normal, morph_tangent},
@@ -88,6 +89,10 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     );
 @else // SKINNED
     var world_from_local = mesh_world_from_local;
+@if(SKINNED)
+    if (mesh[vertex_no_morph.instance_index].flags & MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT) != 0u {
+        world_from_local = mesh_world_from_local * world_from_local;
+    }
 
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     out.position = position_world_to_clip(out.world_position.xyz);

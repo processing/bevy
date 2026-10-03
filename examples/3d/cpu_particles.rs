@@ -254,7 +254,8 @@ fn write_particle_instances(emitter: Single<(&mut CpuParticles, &mut Aabb)>) {
             world_from_local: world_from_local.to_transpose(),
             is_active: 1,
             tag: index as u32,
-            pad: [0; 2],
+            skin_index: 0,
+            flags: 0,
         };
     }
     *aabb = if min.cmple(max).all() {

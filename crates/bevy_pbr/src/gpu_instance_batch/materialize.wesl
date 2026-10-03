@@ -1,6 +1,8 @@
 import bevy_render::occlusion_culling::mesh_preprocess_types::{MeshInput, MeshCullingData};
-import package::gpu_instance_batch::gpu_instance::GpuMeshInstance;
-import package::render::mesh_types::MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT;
+import package::gpu_instance_batch::gpu_instance::{GpuMeshInstance, GPU_MESH_INSTANCE_SKIN};
+import package::render::mesh_types::{
+    MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT, MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT,
+};
 
 struct Metadata {
     mesh_input: MeshInput,
@@ -34,6 +36,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     input.flags = (input.flags & ~MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT)
         | select(0u, MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT, determinant(linear) >= 0.0);
     input.tag = instance.tag;
+    if (instance.flags & GPU_MESH_INSTANCE_SKIN) != 0u {
+        input.current_skin_index = instance.skin_index;
+        input.flags |= MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT;
+    }
     inputs[output] = input;
     var culling = metadata.bounds;
     culling.is_active = instance.is_active;
