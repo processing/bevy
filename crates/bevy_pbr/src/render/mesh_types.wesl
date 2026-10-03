@@ -72,6 +72,7 @@ struct MorphAttributes {
 
 // [2^0, 2^16)
 const MESH_FLAGS_VISIBILITY_RANGE_INDEX_BITS: u32     = (1u << 16u) - 1u;
+const MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT: u32       = 1u << 26u;
 const MESH_FLAGS_AABB_BASED_VISIBILITY_RANGE_BIT: u32 = 1u << 27u;
 const MESH_FLAGS_NO_FRUSTUM_CULLING_BIT: u32          = 1u << 28u;
 const MESH_FLAGS_SHADOW_RECEIVER_BIT: u32             = 1u << 29u;

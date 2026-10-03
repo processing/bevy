@@ -1,6 +1,7 @@
 import package::render::{
     mesh_bindings::mesh,
     mesh_functions,
+    mesh_types::MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT,
     skinning,
     morph::{morph_position, morph_normal, morph_tangent},
     forward_io::{Vertex, UncompressedVertex, VertexOutput, decompress_vertex},
@@ -52,6 +53,10 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     );
 @else
     var world_from_local = mesh_world_from_local;
+@if(SKINNED)
+    if (mesh[vertex_no_morph.instance_index].flags & MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT) != 0u {
+        world_from_local = mesh_world_from_local * world_from_local;
+    }
 
 @if(VERTEX_NORMALS && SKINNED)
     out.world_normal = skinning::skin_normals(world_from_local, vertex.normal);

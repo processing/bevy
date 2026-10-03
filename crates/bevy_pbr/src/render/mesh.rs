@@ -825,6 +825,10 @@ bitflags::bitflags! {
         ///
         /// This will be `u16::MAX` if this mesh has no LOD.
         const LOD_INDEX_MASK              = (1 << 16) - 1;
+        /// The vertex shader composes the instance transform with the skin
+        /// pose instead of letting the joint matrices place the mesh. Set by
+        /// GPU instance batches whose instances carry their own skin.
+        const SKIN_INSTANCE_COMPOSE       = 1 << 26;
         /// Whether visibility ranges use the center of the AABB to compute
         /// distance from the camera.
         ///
@@ -4677,6 +4681,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
         SRes<MeshAllocator>,
         SRes<RenderLightmaps>,
         SRes<MeshMetadataFallbackBuffer>,
+        SRes<RenderAssets<RenderMesh>>,
     );
     type ViewQuery = Has<MotionVectorPrepass>;
     type ItemQuery = ();
@@ -4695,6 +4700,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             mesh_allocator,
             lightmaps,
             metadata_fallback_buffer,
+            render_meshes,
         ): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -4752,7 +4758,15 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             }
         };
 
-        let is_skinned = current_skin_byte_offset.is_some();
+        // Specialization keys skinning off the mesh layout. GPU instance batch
+        // entities have no `SkinnedMesh`, so on the storage-buffer skin path
+        // (one global joint array, addressed per instance) the bind group must
+        // follow the layout too, or it disagrees with the pipeline.
+        let is_skinned = current_skin_byte_offset.is_some()
+            || (!skins_use_uniform_buffers
+                && render_meshes
+                    .get(mesh_asset_id)
+                    .is_some_and(|mesh| is_skinned(&mesh.layout)));
 
         let lightmap_slab_index = lightmaps
             .render_lightmaps

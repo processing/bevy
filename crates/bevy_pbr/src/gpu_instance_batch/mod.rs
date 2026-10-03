@@ -57,7 +57,18 @@ pub struct GpuMeshInstance {
     pub world_from_local: [Vec4; 3],
     pub is_active: u32,
     pub tag: u32,
-    pub pad: [u32; 2],
+    /// Skin to pose this instance with, an index into the skin uniforms. Only
+    /// read when `flags` has [`GpuMeshInstance::INSTANCE_SKIN`].
+    pub skin_index: u32,
+    pub flags: u32,
+}
+
+impl GpuMeshInstance {
+    /// Pose a skinned mesh with `skin_index` and place it with
+    /// `world_from_local`. The joint matrices then hold a pose relative to the
+    /// skeleton root rather than its world placement, so one set of poses can
+    /// drive many instances (crowds).
+    pub const INSTANCE_SKIN: u32 = 1;
 }
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
