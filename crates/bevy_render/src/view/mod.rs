@@ -1226,13 +1226,6 @@ pub fn prepare_view_targets(
             .as_ref()
             .and_then(|target| view_target_attachments.get(target));
 
-        // If we have no output and the camera is set to clear, we can skip rendering
-        // entirely.
-        if out_attachment.is_none() && !matches!(camera.clear_color, ClearColorConfig::None) {
-            commands.entity(entity).try_remove::<ViewTarget>();
-            continue;
-        }
-
         let main_texture_format = view.target_format;
 
         let clear_color = match camera.clear_color {
